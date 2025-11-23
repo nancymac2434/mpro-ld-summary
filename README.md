@@ -31,7 +31,7 @@ Display all quiz answers and form responses for a course in one unified, beautif
 - `course_id` (required) - The LearnDash course ID
 - `show_forms` (optional) - Show form data (default: "yes")
 - `show_quizzes` (optional) - Show quiz answers (default: "yes")
-- `debug` (optional) - Enable debug mode (default: "0")
+- `debug` (optional) - Enable debug mode with `debug="1"` to see technical details (default: "0")
 
 **Example:**
 ```

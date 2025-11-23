@@ -154,6 +154,40 @@ class LDCT_Settings {
 
             <hr>
 
+            <h2>Quiz Statistics Management</h2>
+
+            <div class="ldct-stats-tools" style="background:#f9f9f9;padding:20px;border-radius:5px;margin:20px 0;">
+                <p>Control whether quiz statistics are enabled for all LearnDash quizzes. Statistics must be enabled to track and display quiz responses.</p>
+
+                <div style="margin:15px 0;">
+                    <a href="<?php echo esc_url(admin_url('options-general.php?page=learndash-course-toolkit&ld_stats_action=preview')); ?>"
+                       class="button">
+                        📊 View Statistics Status
+                    </a>
+
+                    <a href="<?php echo esc_url(admin_url('options-general.php?page=learndash-course-toolkit&ld_stats_action=enable')); ?>"
+                       class="button button-primary"
+                       onclick="return confirm('Enable statistics for all quizzes?');">
+                        ✅ Enable Statistics for All Quizzes
+                    </a>
+
+                    <a href="<?php echo esc_url(admin_url('options-general.php?page=learndash-course-toolkit&ld_stats_action=disable')); ?>"
+                       class="button"
+                       onclick="return confirm('Disable statistics for all quizzes? This will stop tracking new responses.');">
+                        ❌ Disable Statistics for All Quizzes
+                    </a>
+                </div>
+
+                <?php
+                // Handle statistics actions
+                if (isset($_GET['ld_stats_action']) && current_user_can('manage_options')) {
+                    $this->handle_stats_action($_GET['ld_stats_action']);
+                }
+                ?>
+            </div>
+
+            <hr>
+
             <h2>Available Shortcodes</h2>
 
             <div class="ldct-shortcode-docs">
@@ -191,5 +225,69 @@ class LDCT_Settings {
             </style>
         </div>
         <?php
+    }
+
+    /**
+     * Handle quiz statistics actions
+     */
+    private function handle_stats_action($action) {
+        global $wpdb;
+
+        $mode = sanitize_key($action); // preview, enable, disable
+        $msgs = array();
+
+        // Find all quiz_pro_id used by this site's quizzes
+        $ids = $wpdb->get_col("
+            SELECT CAST(pm.meta_value AS UNSIGNED)
+            FROM {$wpdb->postmeta} pm
+            JOIN {$wpdb->posts} p ON p.ID = pm.post_id
+            WHERE p.post_type = 'sfwd-quiz' AND pm.meta_key = 'quiz_pro_id' AND pm.meta_value <> ''
+        ");
+
+        $ids = array_values(array_unique(array_map('intval', $ids)));
+
+        if (empty($ids)) {
+            echo '<div class="notice notice-error"><p><strong>No quizzes found.</strong> Make sure you have LearnDash quizzes created.</p></div>';
+            return;
+        }
+
+        // Candidate table names
+        $cands = array(
+            $wpdb->prefix . 'wp_pro_quiz_quiz',
+            $wpdb->prefix . 'pro_quiz_quiz',
+            $wpdb->base_prefix . 'wp_pro_quiz_quiz',
+            $wpdb->base_prefix . 'pro_quiz_quiz',
+        );
+        $cands = array_values(array_unique($cands));
+
+        $ids_sql = implode(',', $ids);
+        $wpdb->suppress_errors(true);
+
+        foreach ($cands as $t) {
+            $exists = $wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $t));
+            if ($exists !== $t) {
+                continue;
+            }
+
+            if ($mode === 'preview') {
+                $on  = (int)$wpdb->get_var("SELECT COUNT(*) FROM {$t} WHERE id IN ($ids_sql) AND statistics_on = 1");
+                $off = (int)$wpdb->get_var("SELECT COUNT(*) FROM {$t} WHERE id IN ($ids_sql) AND statistics_on = 0");
+                $msgs[] = "<strong>{$t}:</strong> " . count($ids) . " quizzes total → <span style='color:#16a34a;font-weight:600;'>{$on} ON</span>, <span style='color:#dc2626;font-weight:600;'>{$off} OFF</span>";
+                continue;
+            }
+
+            $turnOn = ($mode === 'enable');
+            $set    = "statistics_on = " . ($turnOn ? 1 : 0) . ", statistics_ip_lock = 0";
+            $res = $wpdb->query("UPDATE {$t} SET {$set} WHERE id IN ($ids_sql)");
+            $action_text = $turnOn ? 'enabled' : 'disabled';
+            $msgs[] = "<strong>{$t}:</strong> Statistics {$action_text} for " . ($res === false ? 0 : (int)$res) . " quizzes";
+        }
+
+        $wpdb->suppress_errors(false);
+
+        if (!empty($msgs)) {
+            $notice_class = ($mode === 'preview') ? 'notice-info' : 'notice-success';
+            echo '<div class="notice ' . $notice_class . '"><p>' . implode('<br>', $msgs) . '</p></div>';
+        }
     }
 }

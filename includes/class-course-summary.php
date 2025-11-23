@@ -57,32 +57,60 @@ class LDCT_Course_Summary {
 
         $user_id = get_current_user_id();
 
+        // Initialize debug data
+        $debug_info = array(
+            'plugin_version' => 'LDCT 1.0.0',
+            'timestamp' => current_time('mysql'),
+            'user_id' => $user_id,
+            'course_id' => $course_id,
+            'show_forms' => $show_forms,
+            'show_quizzes' => $show_quizzes,
+            'course_exists' => (get_post($course_id) !== null),
+            'course_post_type' => get_post_type($course_id),
+        );
+
         // Gather all data
         $quiz_data = array();
         $form_data = array();
 
         if ($show_quizzes) {
-            $quiz_data = $this->get_course_quiz_data($course_id, $user_id);
+            $quiz_data = $this->get_course_quiz_data($course_id, $user_id, $debug_info);
+        } else {
+            $debug_info['skip_reason'] = 'show_quizzes is false';
         }
 
         if ($show_forms) {
             $form_data = $this->get_course_form_data($user_id);
+            $debug_info['form_data_count'] = count($form_data);
         }
 
+        $debug_info['final_quiz_data_count'] = count($quiz_data);
+        $debug_info['final_form_data_count'] = count($form_data);
+
         // Render output
-        return $this->render_summary_html($course_id, $quiz_data, $form_data, $debug);
+        return $this->render_summary_html($course_id, $quiz_data, $form_data, $debug, $debug_info);
     }
 
     /**
      * Get all quiz data for a course
      */
-    private function get_course_quiz_data($course_id, $user_id) {
+    private function get_course_quiz_data($course_id, $user_id, &$debug_info) {
         global $wpdb;
 
         // Get all quizzes in this course
         $quizzes = $this->get_course_quizzes($course_id);
 
+        // Get the debug methods info
+        global $ldct_quiz_debug;
+        if (isset($ldct_quiz_debug)) {
+            $debug_info['quiz_finding_methods'] = $ldct_quiz_debug;
+        }
+
+        $debug_info['quizzes_found'] = $quizzes;
+        $debug_info['quiz_count'] = count($quizzes);
+
         if (empty($quizzes)) {
+            $debug_info['error'] = 'No quizzes found in course - see quiz_finding_methods for details';
             return array();
         }
 
@@ -91,21 +119,36 @@ class LDCT_Course_Summary {
         $t_stat = $base . 'statistic';
         $t_q = $base . 'question';
 
+        $debug_info['tables'] = array(
+            't_ref' => $t_ref,
+            't_stat' => $t_stat,
+            't_q' => $t_q,
+        );
+
         $result = array();
+        $debug_info['quiz_attempts'] = array();
 
         foreach ($quizzes as $quiz) {
             $quiz_id = $quiz['ID'];
             $quiz_title = $quiz['post_title'];
 
             // Get user's latest attempt for this quiz
-            $ref = $wpdb->get_row($wpdb->prepare(
+            $ref_query = $wpdb->prepare(
                 "SELECT statistic_ref_id, quiz_id, create_time
                  FROM {$t_ref}
                  WHERE user_id=%d AND quiz_post_id=%d
                  ORDER BY create_time DESC, statistic_ref_id DESC
                  LIMIT 1",
                 $user_id, $quiz_id
-            ), ARRAY_A);
+            );
+
+            $ref = $wpdb->get_row($ref_query, ARRAY_A);
+
+            $debug_info['quiz_attempts'][$quiz_id] = array(
+                'quiz_title' => $quiz_title,
+                'query' => $ref_query,
+                'ref_result' => $ref,
+            );
 
             if (!$ref) {
                 continue; // User hasn't attempted this quiz
@@ -114,14 +157,49 @@ class LDCT_Course_Summary {
             $ref_id = (int)$ref['statistic_ref_id'];
 
             // Get all questions from this quiz attempt
-            $questions = $wpdb->get_results($wpdb->prepare(
-                "SELECT s.question_post_id, s.question_id, s.answer_data, q.question, q.answer_type
-                 FROM {$t_stat} s
-                 LEFT JOIN {$t_q} q ON q.id = s.question_id
-                 WHERE s.statistic_ref_id = %d
-                 ORDER BY s.statistic_id ASC",
+            $questions_query = $wpdb->prepare(
+                "SELECT question_post_id, question_id, answer_data
+                 FROM {$t_stat}
+                 WHERE statistic_ref_id = %d
+                 ORDER BY question_id ASC",
                 $ref_id
-            ), ARRAY_A);
+            );
+
+            $stat_rows = $wpdb->get_results($questions_query, ARRAY_A);
+
+            // Enrich each row with question text and answer content
+            $questions = array();
+            foreach ($stat_rows as $row) {
+                $question_post_id = $row['question_post_id'];
+                $answer_data = $row['answer_data'];
+
+                // Get question text from the question post
+                $question_post = get_post($question_post_id);
+                $question_text = $question_post ? $question_post->post_title : 'Question #' . $question_post_id;
+
+                // Parse answer_data to get essay content
+                $answer_decoded = json_decode($answer_data, true);
+                $essay_text = '';
+
+                if (is_array($answer_decoded) && isset($answer_decoded['graded_id'])) {
+                    $essay_post = get_post((int)$answer_decoded['graded_id']);
+                    if ($essay_post) {
+                        $essay_text = wp_strip_all_tags($essay_post->post_content);
+                    }
+                }
+
+                $questions[] = array(
+                    'question_post_id' => $question_post_id,
+                    'question' => $question_text,
+                    'answer_type' => 'essay', // These are essay questions
+                    'answer_data' => $answer_data,
+                    'essay_text' => $essay_text,
+                );
+            }
+
+            $debug_info['quiz_attempts'][$quiz_id]['questions_query'] = $questions_query;
+            $debug_info['quiz_attempts'][$quiz_id]['questions_found'] = count($questions);
+            $debug_info['quiz_attempts'][$quiz_id]['questions_sample'] = !empty($questions) ? array_slice($questions, 0, 2) : null;
 
             if (!empty($questions)) {
                 $result[] = array(
@@ -140,30 +218,109 @@ class LDCT_Course_Summary {
      * Get all quizzes in a course
      */
     private function get_course_quizzes($course_id) {
-        // Get course steps
-        $quizzes = learndash_get_course_quiz_list($course_id);
+        global $wpdb;
 
+        $debug_methods = array();
+        $quizzes = array();
+
+        // Method 1: LearnDash function
+        if (function_exists('learndash_get_course_quiz_list')) {
+            $ld_quizzes = learndash_get_course_quiz_list($course_id);
+            $debug_methods['method_1_learndash_function'] = array(
+                'result' => $ld_quizzes,
+                'count' => is_array($ld_quizzes) ? count($ld_quizzes) : 0,
+            );
+
+            if (!empty($ld_quizzes) && is_array($ld_quizzes)) {
+                foreach ($ld_quizzes as $quiz) {
+                    if (isset($quiz['post'])) {
+                        $quizzes[] = array('ID' => $quiz['post']->ID, 'post_title' => $quiz['post']->post_title);
+                    } elseif (is_object($quiz) && isset($quiz->ID)) {
+                        $quizzes[] = array('ID' => $quiz->ID, 'post_title' => $quiz->post_title);
+                    } elseif (is_array($quiz) && isset($quiz['ID'])) {
+                        $quizzes[] = $quiz;
+                    }
+                }
+            }
+        } else {
+            $debug_methods['method_1_learndash_function'] = 'Function does not exist';
+        }
+
+        // Method 2: Course steps meta
         if (empty($quizzes)) {
-            // Fallback: query directly
-            $quiz_ids = get_post_meta($course_id, 'ld_course_steps', true);
-            if (!empty($quiz_ids) && is_array($quiz_ids) && isset($quiz_ids['sfwd-quiz'])) {
-                $quiz_ids = $quiz_ids['sfwd-quiz'];
-            } else {
-                $quiz_ids = array();
-            }
+            $course_steps = get_post_meta($course_id, 'ld_course_steps', true);
+            $debug_methods['method_2_course_steps'] = array(
+                'raw' => $course_steps,
+                'is_array' => is_array($course_steps),
+            );
 
-            if (empty($quiz_ids)) {
-                return array();
-            }
-
-            $quizzes = array();
-            foreach ($quiz_ids as $qid) {
-                $post = get_post($qid);
-                if ($post && $post->post_type === 'sfwd-quiz') {
-                    $quizzes[] = array('ID' => $post->ID, 'post_title' => $post->post_title);
+            if (!empty($course_steps) && is_array($course_steps) && isset($course_steps['sfwd-quiz'])) {
+                $quiz_ids = $course_steps['sfwd-quiz'];
+                foreach ($quiz_ids as $qid) {
+                    $post = get_post($qid);
+                    if ($post && $post->post_type === 'sfwd-quiz') {
+                        $quizzes[] = array('ID' => $post->ID, 'post_title' => $post->post_title);
+                    }
                 }
             }
         }
+
+        // Method 3: Direct query for quizzes with this course_id in meta
+        if (empty($quizzes)) {
+            $query_results = $wpdb->get_results($wpdb->prepare(
+                "SELECT p.ID, p.post_title
+                 FROM {$wpdb->posts} p
+                 INNER JOIN {$wpdb->postmeta} pm ON p.ID = pm.post_id
+                 WHERE p.post_type = 'sfwd-quiz'
+                 AND p.post_status = 'publish'
+                 AND pm.meta_key = 'course_id'
+                 AND pm.meta_value = %d",
+                $course_id
+            ), ARRAY_A);
+
+            $debug_methods['method_3_direct_query'] = array(
+                'sql' => $wpdb->last_query,
+                'count' => count($query_results),
+            );
+
+            if (!empty($query_results)) {
+                $quizzes = $query_results;
+            }
+        }
+
+        // Method 4: Find ALL quizzes and check their lesson/topic association
+        if (empty($quizzes)) {
+            $all_quizzes = get_posts(array(
+                'post_type' => 'sfwd-quiz',
+                'post_status' => 'publish',
+                'numberposts' => -1,
+            ));
+
+            $debug_methods['method_4_all_quizzes_check'] = array(
+                'total_quizzes_in_site' => count($all_quizzes),
+                'matching' => array(),
+            );
+
+            foreach ($all_quizzes as $quiz) {
+                // Check if this quiz's lessons/topics belong to our course
+                $lesson_id = get_post_meta($quiz->ID, 'lesson_id', true);
+                if ($lesson_id) {
+                    $lesson_course = get_post_meta($lesson_id, 'course_id', true);
+                    if ($lesson_course == $course_id) {
+                        $quizzes[] = array('ID' => $quiz->ID, 'post_title' => $quiz->post_title);
+                        $debug_methods['method_4_all_quizzes_check']['matching'][] = array(
+                            'quiz_id' => $quiz->ID,
+                            'quiz_title' => $quiz->post_title,
+                            'lesson_id' => $lesson_id,
+                        );
+                    }
+                }
+            }
+        }
+
+        // Store debug info globally for retrieval
+        global $ldct_quiz_debug;
+        $ldct_quiz_debug = $debug_methods;
 
         return $quizzes;
     }
@@ -179,7 +336,7 @@ class LDCT_Course_Summary {
     /**
      * Render the summary HTML
      */
-    private function render_summary_html($course_id, $quiz_data, $form_data, $debug) {
+    private function render_summary_html($course_id, $quiz_data, $form_data, $debug, $debug_info) {
         $course = get_post($course_id);
         $course_title = $course ? $course->post_title : "Course #{$course_id}";
 
@@ -225,7 +382,7 @@ class LDCT_Course_Summary {
                 $html[] = '<div class="ldct-quiz" style="margin-bottom:2rem;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;overflow:hidden;">';
                 $html[] = '<div class="ldct-quiz-header" style="padding:1rem 1.5rem;background:#e8edf5;border-bottom:1px solid #cbd5e1;">';
                 $html[] = '<h4 style="margin:0;font-size:1.1rem;color:#1e3a8a;">' . esc_html($quiz['quiz_title']) . '</h4>';
-                $html[] = '<p style="margin:0.25rem 0 0;font-size:0.85rem;color:#64748b;">Completed: ' . esc_html(date('F j, Y g:i a', strtotime($quiz['attempt_time']))) . '</p>';
+                $html[] = '<p style="margin:0.25rem 0 0;font-size:0.85rem;color:#64748b;">Completed: ' . esc_html(date('F j, Y g:i a', (int)$quiz['attempt_time'])) . '</p>';
                 $html[] = '</div>';
 
                 $html[] = '<div class="ldct-questions" style="padding:1.5rem;">';
@@ -258,17 +415,38 @@ class LDCT_Course_Summary {
             $html[] = '</div>';
         }
 
-        // Debug info
+        // Debug info - Only show when explicitly enabled with debug="1"
         if ($debug) {
-            $html[] = '<div class="ldct-debug" style="margin-top:2rem;padding:1rem;background:#0b0d12;color:#eaeef2;border-radius:8px;font-family:monospace;font-size:0.85rem;overflow:auto;">';
-            $html[] = '<strong style="display:block;margin-bottom:0.5rem;">Debug Info:</strong>';
-            $html[] = '<pre style="margin:0;white-space:pre-wrap;">';
-            $html[] = esc_html(wp_json_encode(array(
-                'course_id' => $course_id,
-                'quiz_count' => count($quiz_data),
-                'form_field_count' => count($form_data),
-            ), JSON_PRETTY_PRINT));
-            $html[] = '</pre>';
+            $html[] = '<div class="ldct-debug" style="margin-top:2rem;padding:1.5rem;background:#0b0d12 !important;color:#eaeef2 !important;border-radius:8px;font-family:monospace;font-size:0.85rem;overflow:auto;max-height:600px;border:2px solid #374151;">';
+            $html[] = '<strong style="display:block;margin-bottom:1rem;font-size:1.1rem;color:#fbbf24 !important;">🔍 Debug Information:</strong>';
+
+            // Check if debug_info is empty or invalid
+            if (empty($debug_info)) {
+                $html[] = '<p style="color:#ef4444 !important;">⚠️ DEBUG INFO IS EMPTY! This is a critical error.</p>';
+                $html[] = '<p style="color:#eaeef2 !important;">Debug array type: ' . esc_html(gettype($debug_info)) . '</p>';
+                $html[] = '<p style="color:#eaeef2 !important;">Debug array count: ' . esc_html(is_array($debug_info) ? count($debug_info) : 'N/A') . '</p>';
+            } else {
+                $html[] = '<pre style="margin:0 !important;white-space:pre-wrap !important;line-height:1.5 !important;color:#eaeef2 !important;background:transparent !important;border:none !important;padding:0 !important;">';
+                $debug_json = wp_json_encode($debug_info, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
+                if ($debug_json === false) {
+                    $html[] = '⚠️ JSON ENCODING FAILED: ' . esc_html(json_last_error_msg());
+                    $html[] = "\nRaw debug_info:\n" . esc_html(print_r($debug_info, true));
+                } else {
+                    $html[] = esc_html($debug_json);
+                }
+                $html[] = '</pre>';
+            }
+
+            $html[] = '<div style="margin-top:1rem;padding-top:1rem;border-top:1px solid #374151;color:#eaeef2 !important;">';
+            $html[] = '<strong style="color:#fbbf24 !important;">💡 Tips:</strong>';
+            $html[] = '<ul style="margin:0.5rem 0 0 1.5rem;line-height:1.8;color:#eaeef2 !important;">';
+            $html[] = '<li style="color:#eaeef2 !important;">Check if <code style="background:#1f2937;padding:2px 6px;border-radius:3px;color:#10b981;">course_exists</code> is true</li>';
+            $html[] = '<li style="color:#eaeef2 !important;">Check if <code style="background:#1f2937;padding:2px 6px;border-radius:3px;color:#10b981;">quiz_count</code> shows quizzes were found</li>';
+            $html[] = '<li style="color:#eaeef2 !important;">Check if <code style="background:#1f2937;padding:2px 6px;border-radius:3px;color:#10b981;">quiz_attempts</code> shows any attempts for your user</li>';
+            $html[] = '<li style="color:#eaeef2 !important;">Look for SQL queries that you can test directly in phpMyAdmin</li>';
+            $html[] = '<li style="color:#eaeef2 !important;">Verify the <code style="background:#1f2937;padding:2px 6px;border-radius:3px;color:#10b981;">user_id</code> matches your logged-in user</li>';
+            $html[] = '</ul>';
+            $html[] = '</div>';
             $html[] = '</div>';
         }
 
@@ -281,10 +459,15 @@ class LDCT_Course_Summary {
      * Format answer data for display
      */
     private function format_answer($question) {
-        $answer_data = $question['answer_data'];
         $answer_type = $question['answer_type'] ?? '';
 
-        // Try to decode the answer
+        // Check if we already extracted essay text
+        if (isset($question['essay_text']) && trim($question['essay_text']) !== '') {
+            return nl2br(esc_html($question['essay_text']));
+        }
+
+        // Fallback: try to decode the answer_data
+        $answer_data = $question['answer_data'];
         $decoded = $this->decode_answer($answer_data);
 
         // Handle different answer types
@@ -308,7 +491,7 @@ class LDCT_Course_Summary {
             if (is_string($decoded) && trim($decoded) !== '') {
                 return nl2br(esc_html($decoded));
             }
-            return '<em>Essay response</em>';
+            return '<em>No essay text found</em>';
         }
 
         // For choice questions, just show the raw answer
