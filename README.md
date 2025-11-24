@@ -24,24 +24,43 @@ A comprehensive WordPress plugin for LearnDash that provides powerful shortcodes
 Display all quiz answers and form responses for a course in one unified, beautifully formatted summary:
 
 ```
+[ld_course_summary]
+```
+
+or with explicit course ID:
+
+```
 [ld_course_summary course_id="123"]
 ```
 
 **Parameters:**
-- `course_id` (required) - The LearnDash course ID
+- `course_id` (optional) - The LearnDash course ID. If omitted, automatically detects the course from the current page context (works on lesson, topic, or quiz pages)
 - `show_forms` (optional) - Show form data (default: "yes")
-- `show_quizzes` (optional) - Show quiz answers (default: "yes")
+- `show_quizzes` (optional) - Quiz display mode:
+  - `"essays"` (default) - Show only essay/free-answer questions
+  - `"all"` - Show all quiz questions (including multiple choice, true/false, etc.)
+  - `"no"` - Don't show any quiz questions
 - `debug` (optional) - Enable debug mode with `debug="1"` to see technical details (default: "0")
 
-**Example:**
+**Examples:**
 ```
-[ld_course_summary course_id="456" show_forms="yes" show_quizzes="yes"]
+# Simple usage - auto-detects course, shows essays and forms
+[ld_course_summary]
+
+# Show all quiz question types (not just essays)
+[ld_course_summary show_quizzes="all"]
+
+# Show only forms, no quiz questions
+[ld_course_summary show_quizzes="no"]
+
+# Explicit course ID - useful for custom pages or showing different course
+[ld_course_summary course_id="456" show_forms="yes" show_quizzes="essays"]
 ```
 
 This shortcode automatically:
 - Finds all quizzes in the specified course
-- Retrieves all questions from those quizzes
-- Displays the user's answers in the order they completed them
+- Retrieves essay questions from those quizzes (by default)
+- Displays the user's essay responses in the order they completed them
 - Includes all Otter form responses
 - Shows everything in a clean, organized format
 

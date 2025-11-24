@@ -2,8 +2,9 @@
 /**
  * Course Summary Handler
  *
- * Provides unified shortcode to display all quiz answers and form responses for a course.
- * Shortcode: [ld_course_summary course_id="123"]
+ * Provides unified shortcode to display essay answers and form responses for a course.
+ * Shortcode: [ld_course_summary]
+ * By default shows only essay-type questions. Use show_quizzes="all" to show all question types.
  *
  * @package LearnDash_Course_Toolkit
  */
@@ -34,18 +35,23 @@ class LDCT_Course_Summary {
         $a = shortcode_atts(array(
             'course_id' => 0,
             'show_forms' => 'yes',
-            'show_quizzes' => 'yes',
+            'show_quizzes' => 'essays', // 'essays' (default), 'all', or 'no'
             'debug' => '0',
         ), $atts, 'ld_course_summary');
 
         $course_id = (int)$a['course_id'];
         $show_forms = strtolower($a['show_forms']) !== 'no';
-        $show_quizzes = strtolower($a['show_quizzes']) !== 'no';
+        $show_quizzes = strtolower($a['show_quizzes']); // 'essays', 'all', or 'no'
         $debug = $a['debug'] === '1';
+
+        // Auto-detect course_id if not provided
+        if (!$course_id && function_exists('learndash_get_course_id')) {
+            $course_id = learndash_get_course_id();
+        }
 
         if (!$course_id) {
             return '<div class="ldct-error" style="padding:1rem;background:#fee;border:1px solid #fcc;border-radius:8px;color:#c33;">
-                <strong>Error:</strong> course_id is required for [ld_course_summary].
+                <strong>Error:</strong> Unable to determine course. Please add course_id parameter or place this shortcode within a LearnDash course context.
             </div>';
         }
 
@@ -73,10 +79,10 @@ class LDCT_Course_Summary {
         $quiz_data = array();
         $form_data = array();
 
-        if ($show_quizzes) {
-            $quiz_data = $this->get_course_quiz_data($course_id, $user_id, $debug_info);
+        if ($show_quizzes !== 'no') {
+            $quiz_data = $this->get_course_quiz_data($course_id, $user_id, $show_quizzes, $debug_info);
         } else {
-            $debug_info['skip_reason'] = 'show_quizzes is false';
+            $debug_info['skip_reason'] = 'show_quizzes is set to no';
         }
 
         if ($show_forms) {
@@ -94,7 +100,7 @@ class LDCT_Course_Summary {
     /**
      * Get all quiz data for a course
      */
-    private function get_course_quiz_data($course_id, $user_id, &$debug_info) {
+    private function get_course_quiz_data($course_id, $user_id, $quiz_mode, &$debug_info) {
         global $wpdb;
 
         // Get all quizzes in this course
@@ -156,14 +162,29 @@ class LDCT_Course_Summary {
 
             $ref_id = (int)$ref['statistic_ref_id'];
 
-            // Get all questions from this quiz attempt
-            $questions_query = $wpdb->prepare(
-                "SELECT question_post_id, question_id, answer_data
-                 FROM {$t_stat}
-                 WHERE statistic_ref_id = %d
-                 ORDER BY question_id ASC",
-                $ref_id
-            );
+            // Get questions from this quiz attempt
+            // If quiz_mode is 'essays', only get essay-type questions
+            if ($quiz_mode === 'essays') {
+                $questions_query = $wpdb->prepare(
+                    "SELECT s.question_post_id, s.question_id, s.answer_data, q.answer_type
+                     FROM {$t_stat} s
+                     INNER JOIN {$t_q} q ON s.question_id = q.id
+                     WHERE s.statistic_ref_id = %d
+                     AND q.answer_type IN ('essay', 'free_answer')
+                     ORDER BY s.question_id ASC",
+                    $ref_id
+                );
+            } else {
+                // 'all' mode - get all questions
+                $questions_query = $wpdb->prepare(
+                    "SELECT s.question_post_id, s.question_id, s.answer_data, q.answer_type
+                     FROM {$t_stat} s
+                     INNER JOIN {$t_q} q ON s.question_id = q.id
+                     WHERE s.statistic_ref_id = %d
+                     ORDER BY s.question_id ASC",
+                    $ref_id
+                );
+            }
 
             $stat_rows = $wpdb->get_results($questions_query, ARRAY_A);
 
@@ -172,26 +193,29 @@ class LDCT_Course_Summary {
             foreach ($stat_rows as $row) {
                 $question_post_id = $row['question_post_id'];
                 $answer_data = $row['answer_data'];
+                $answer_type = $row['answer_type'] ?? 'essay';
 
                 // Get question text from the question post
                 $question_post = get_post($question_post_id);
                 $question_text = $question_post ? $question_post->post_title : 'Question #' . $question_post_id;
 
-                // Parse answer_data to get essay content
+                // Parse answer_data to get essay content (for essay questions)
                 $answer_decoded = json_decode($answer_data, true);
                 $essay_text = '';
 
-                if (is_array($answer_decoded) && isset($answer_decoded['graded_id'])) {
-                    $essay_post = get_post((int)$answer_decoded['graded_id']);
-                    if ($essay_post) {
-                        $essay_text = wp_strip_all_tags($essay_post->post_content);
+                if (in_array($answer_type, array('essay', 'free_answer'), true)) {
+                    if (is_array($answer_decoded) && isset($answer_decoded['graded_id'])) {
+                        $essay_post = get_post((int)$answer_decoded['graded_id']);
+                        if ($essay_post) {
+                            $essay_text = wp_strip_all_tags($essay_post->post_content);
+                        }
                     }
                 }
 
                 $questions[] = array(
                     'question_post_id' => $question_post_id,
                     'question' => $question_text,
-                    'answer_type' => 'essay', // These are essay questions
+                    'answer_type' => $answer_type,
                     'answer_data' => $answer_data,
                     'essay_text' => $essay_text,
                 );
@@ -341,28 +365,28 @@ class LDCT_Course_Summary {
         $course_title = $course ? $course->post_title : "Course #{$course_id}";
 
         $html = array();
-        $html[] = '<div class="ldct-course-summary" style="margin:2rem 0;padding:2rem;background:#fff;border:2px solid #e8edf5;border-radius:12px;box-shadow:0 2px 8px rgba(0,0,0,0.05);">';
+        $html[] = '<div class="ldct-course-summary" style="margin:2rem 0;padding:2rem;background:#fff;border:2px solid #c5dde0;border-radius:12px;box-shadow:0 2px 8px rgba(43,77,89,0.08);">';
 
         // Header
-        $html[] = '<div class="ldct-header" style="margin-bottom:2rem;padding-bottom:1.5rem;border-bottom:2px solid #e8edf5;">';
-        $html[] = '<h2 style="margin:0 0 0.5rem;font-size:1.75rem;color:#1e3a8a;">' . esc_html($course_title) . '</h2>';
-        $html[] = '<p style="margin:0;color:#64748b;">Your Course Summary</p>';
+        $html[] = '<div class="ldct-header" style="margin-bottom:2rem;padding-bottom:1.5rem;border-bottom:2px solid #c5dde0;">';
+        $html[] = '<h2 style="margin:0 0 0.5rem;font-size:1.75rem;color:#2b4d59;">' . esc_html($course_title) . '</h2>';
+        $html[] = '<p style="margin:0;color:#5a7c88;">Your Course Summary</p>';
         $html[] = '</div>';
 
         // Form Data Section
         if (!empty($form_data)) {
             $html[] = '<div class="ldct-forms-section" style="margin-bottom:2.5rem;">';
-            $html[] = '<h3 style="margin:0 0 1rem;font-size:1.35rem;color:#1e3a8a;display:flex;align-items:center;">';
-            $html[] = '<span style="display:inline-block;width:8px;height:8px;background:#3b82f6;border-radius:50%;margin-right:0.75rem;"></span>';
+            $html[] = '<h3 style="margin:0 0 1rem;font-size:1.35rem;color:#2b4d59;display:flex;align-items:center;">';
+            $html[] = '<span style="display:inline-block;width:8px;height:8px;background:#278983;border-radius:50%;margin-right:0.75rem;"></span>';
             $html[] = 'Your Responses';
             $html[] = '</h3>';
-            $html[] = '<div class="ldct-forms-list" style="background:#f8fafc;padding:1.5rem;border-radius:8px;border:1px solid #e2e8f0;">';
+            $html[] = '<div class="ldct-forms-list" style="background:#e8f2f4;padding:1.5rem;border-radius:8px;border:1px solid #c5dde0;">';
             $html[] = '<dl style="margin:0;display:grid;grid-template-columns:auto 1fr;gap:0.75rem 1.5rem;">';
 
             foreach ($form_data as $field => $value) {
                 $display_value = is_array($value) ? implode(', ', array_filter($value, 'strlen')) : $value;
-                $html[] = '<dt style="font-weight:600;color:#475569;">' . esc_html($field) . ':</dt>';
-                $html[] = '<dd style="margin:0;color:#1e293b;">' . esc_html($display_value) . '</dd>';
+                $html[] = '<dt style="font-weight:600;color:#2b4d59;">' . esc_html($field) . ':</dt>';
+                $html[] = '<dd style="margin:0;color:#2b4d59;">' . esc_html($display_value) . '</dd>';
             }
 
             $html[] = '</dl>';
@@ -373,16 +397,16 @@ class LDCT_Course_Summary {
         // Quiz Data Section
         if (!empty($quiz_data)) {
             $html[] = '<div class="ldct-quizzes-section">';
-            $html[] = '<h3 style="margin:0 0 1.5rem;font-size:1.35rem;color:#1e3a8a;display:flex;align-items:center;">';
-            $html[] = '<span style="display:inline-block;width:8px;height:8px;background:#10b981;border-radius:50%;margin-right:0.75rem;"></span>';
-            $html[] = 'Quiz Answers';
+            $html[] = '<h3 style="margin:0 0 1.5rem;font-size:1.35rem;color:#2b4d59;display:flex;align-items:center;">';
+            $html[] = '<span style="display:inline-block;width:8px;height:8px;background:#278983;border-radius:50%;margin-right:0.75rem;"></span>';
+            $html[] = 'Essay Answers';
             $html[] = '</h3>';
 
             foreach ($quiz_data as $quiz) {
-                $html[] = '<div class="ldct-quiz" style="margin-bottom:2rem;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;overflow:hidden;">';
-                $html[] = '<div class="ldct-quiz-header" style="padding:1rem 1.5rem;background:#e8edf5;border-bottom:1px solid #cbd5e1;">';
-                $html[] = '<h4 style="margin:0;font-size:1.1rem;color:#1e3a8a;">' . esc_html($quiz['quiz_title']) . '</h4>';
-                $html[] = '<p style="margin:0.25rem 0 0;font-size:0.85rem;color:#64748b;">Completed: ' . esc_html(date('F j, Y g:i a', (int)$quiz['attempt_time'])) . '</p>';
+                $html[] = '<div class="ldct-quiz" style="margin-bottom:2rem;background:#e8f2f4;border:1px solid #c5dde0;border-radius:8px;overflow:hidden;">';
+                $html[] = '<div class="ldct-quiz-header" style="padding:1rem 1.5rem;background:#c5dde0;border-bottom:1px solid #9dbfc5;">';
+                $html[] = '<h4 style="margin:0;font-size:1.1rem;color:#2b4d59;">' . esc_html($quiz['quiz_title']) . '</h4>';
+                $html[] = '<p style="margin:0.25rem 0 0;font-size:0.85rem;color:#5a7c88;">Completed: ' . esc_html(date('F j, Y g:i a', (int)$quiz['attempt_time'])) . '</p>';
                 $html[] = '</div>';
 
                 $html[] = '<div class="ldct-questions" style="padding:1.5rem;">';
@@ -391,10 +415,10 @@ class LDCT_Course_Summary {
                     $answer_text = $this->format_answer($question);
 
                     $html[] = '<div class="ldct-question" style="margin-bottom:' . ($index < count($quiz['questions']) - 1 ? '1.5rem' : '0') . ';">';
-                    $html[] = '<div class="ldct-question-text" style="font-weight:600;color:#475569;margin-bottom:0.5rem;">';
+                    $html[] = '<div class="ldct-question-text" style="font-weight:600;color:#2b4d59;margin-bottom:0.5rem;">';
                     $html[] = wp_strip_all_tags($question['question']);
                     $html[] = '</div>';
-                    $html[] = '<div class="ldct-answer-text" style="padding:0.75rem 1rem;background:#fff;border-left:3px solid #3b82f6;border-radius:4px;color:#1e293b;">';
+                    $html[] = '<div class="ldct-answer-text" style="padding:0.75rem 1rem;background:#fff;border-left:3px solid #278983;border-radius:4px;color:#2b4d59;">';
                     $html[] = $answer_text;
                     $html[] = '</div>';
                     $html[] = '</div>';
@@ -409,7 +433,7 @@ class LDCT_Course_Summary {
 
         // Empty state
         if (empty($quiz_data) && empty($form_data)) {
-            $html[] = '<div class="ldct-empty" style="padding:3rem;text-align:center;color:#94a3b8;">';
+            $html[] = '<div class="ldct-empty" style="padding:3rem;text-align:center;color:#5a7c88;">';
             $html[] = '<p style="margin:0;font-size:1.1rem;">No quiz attempts or form responses found yet.</p>';
             $html[] = '<p style="margin:0.5rem 0 0;font-size:0.9rem;">Complete quizzes and submit forms to see your summary here.</p>';
             $html[] = '</div>';
@@ -417,8 +441,8 @@ class LDCT_Course_Summary {
 
         // Debug info - Only show when explicitly enabled with debug="1"
         if ($debug) {
-            $html[] = '<div class="ldct-debug" style="margin-top:2rem;padding:1.5rem;background:#0b0d12 !important;color:#eaeef2 !important;border-radius:8px;font-family:monospace;font-size:0.85rem;overflow:auto;max-height:600px;border:2px solid #374151;">';
-            $html[] = '<strong style="display:block;margin-bottom:1rem;font-size:1.1rem;color:#fbbf24 !important;">🔍 Debug Information:</strong>';
+            $html[] = '<div class="ldct-debug" style="margin-top:2rem;padding:1.5rem;background:#0b0d12 !important;color:#eaeef2 !important;border-radius:8px;font-family:monospace;font-size:0.85rem;overflow:auto;max-height:600px;border:2px solid #2b4d59;">';
+            $html[] = '<strong style="display:block;margin-bottom:1rem;font-size:1.1rem;color:#278983 !important;">🔍 Debug Information:</strong>';
 
             // Check if debug_info is empty or invalid
             if (empty($debug_info)) {
@@ -437,14 +461,14 @@ class LDCT_Course_Summary {
                 $html[] = '</pre>';
             }
 
-            $html[] = '<div style="margin-top:1rem;padding-top:1rem;border-top:1px solid #374151;color:#eaeef2 !important;">';
-            $html[] = '<strong style="color:#fbbf24 !important;">💡 Tips:</strong>';
+            $html[] = '<div style="margin-top:1rem;padding-top:1rem;border-top:1px solid #2b4d59;color:#eaeef2 !important;">';
+            $html[] = '<strong style="color:#278983 !important;">💡 Tips:</strong>';
             $html[] = '<ul style="margin:0.5rem 0 0 1.5rem;line-height:1.8;color:#eaeef2 !important;">';
-            $html[] = '<li style="color:#eaeef2 !important;">Check if <code style="background:#1f2937;padding:2px 6px;border-radius:3px;color:#10b981;">course_exists</code> is true</li>';
-            $html[] = '<li style="color:#eaeef2 !important;">Check if <code style="background:#1f2937;padding:2px 6px;border-radius:3px;color:#10b981;">quiz_count</code> shows quizzes were found</li>';
-            $html[] = '<li style="color:#eaeef2 !important;">Check if <code style="background:#1f2937;padding:2px 6px;border-radius:3px;color:#10b981;">quiz_attempts</code> shows any attempts for your user</li>';
+            $html[] = '<li style="color:#eaeef2 !important;">Check if <code style="background:#1f2937;padding:2px 6px;border-radius:3px;color:#278983;">course_exists</code> is true</li>';
+            $html[] = '<li style="color:#eaeef2 !important;">Check if <code style="background:#1f2937;padding:2px 6px;border-radius:3px;color:#278983;">quiz_count</code> shows quizzes were found</li>';
+            $html[] = '<li style="color:#eaeef2 !important;">Check if <code style="background:#1f2937;padding:2px 6px;border-radius:3px;color:#278983;">quiz_attempts</code> shows any attempts for your user</li>';
             $html[] = '<li style="color:#eaeef2 !important;">Look for SQL queries that you can test directly in phpMyAdmin</li>';
-            $html[] = '<li style="color:#eaeef2 !important;">Verify the <code style="background:#1f2937;padding:2px 6px;border-radius:3px;color:#10b981;">user_id</code> matches your logged-in user</li>';
+            $html[] = '<li style="color:#eaeef2 !important;">Verify the <code style="background:#1f2937;padding:2px 6px;border-radius:3px;color:#278983;">user_id</code> matches your logged-in user</li>';
             $html[] = '</ul>';
             $html[] = '</div>';
             $html[] = '</div>';

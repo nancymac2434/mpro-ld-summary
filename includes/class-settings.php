@@ -192,8 +192,8 @@ class LDCT_Settings {
 
             <div class="ldct-shortcode-docs">
                 <h3>Course Summary</h3>
-                <code>[ld_course_summary course_id="123"]</code>
-                <p>Displays all quiz answers and Otter form responses for a specific course in one unified summary.</p>
+                <code>[ld_course_summary]</code> or <code>[ld_course_summary course_id="123"]</code>
+                <p>Displays essay answers and Otter form responses for a course in one unified summary. The <code>course_id</code> parameter is optional - if omitted, it auto-detects the course from the page context. By default shows only essay questions; use <code>show_quizzes="all"</code> to include all question types.</p>
 
                 <h3>Individual Quiz Answer</h3>
                 <code>[ld_qanswer quiz_id="123" question_post_id="456" show="correct" label="Your answer"]</code>
