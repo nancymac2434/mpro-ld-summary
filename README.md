@@ -40,6 +40,9 @@ or with explicit course ID:
   - `"essays"` (default) - Show only essay/free-answer questions
   - `"all"` - Show all quiz questions (including multiple choice, true/false, etc.)
   - `"no"` - Don't show any quiz questions
+- `date` (optional) - Show quiz completion dates (default: "yes")
+  - `"yes"` - Display "Completed: [date/time]" for each quiz
+  - `"no"` - Hide completion dates
 - `debug` (optional) - Enable debug mode with `debug="1"` to see technical details (default: "0")
 
 **Examples:**
@@ -53,8 +56,11 @@ or with explicit course ID:
 # Show only forms, no quiz questions
 [ld_course_summary show_quizzes="no"]
 
+# Hide completion dates
+[ld_course_summary date="no"]
+
 # Explicit course ID - useful for custom pages or showing different course
-[ld_course_summary course_id="456" show_forms="yes" show_quizzes="essays"]
+[ld_course_summary course_id="456" show_forms="yes" show_quizzes="essays" date="no"]
 ```
 
 This shortcode automatically:
@@ -215,8 +221,28 @@ Go to LearnDash LMS > Courses in your WordPress admin. Edit the course you want,
 
 ### How do I find quiz and question IDs?
 
-- **Quiz ID**: Edit the quiz in LearnDash, look for the number in the URL after `post=`
-- **Question ID**: Edit the question, look for the number in the URL after `post=`
+For the `[ld_qanswer]` shortcode, you need both a quiz ID and a question ID:
+
+**Finding the Quiz ID:**
+1. Go to **LearnDash LMS > Quizzes** in WordPress admin
+2. Find the quiz that contains your question
+3. Click to edit the quiz (or hover over it)
+4. Look at the URL in your browser: `wp-admin/post.php?post=12345&action=edit`
+5. The number after `post=` is your **quiz_id** (e.g., 12345)
+
+**Finding the Question ID:**
+1. While editing the quiz (from above), scroll to the **Questions** section
+2. Click on the question you want to display
+3. This opens the question editor - look at the URL: `wp-admin/post.php?post=67890&action=edit&quiz_id=12345`
+4. The number after `post=` is your **question_post_id** (e.g., 67890)
+5. Note: The `quiz_id` shown in this URL should match the quiz ID from step 1
+
+**Example shortcode with these IDs:**
+```
+[ld_qanswer quiz_id="12345" question_post_id="67890"]
+```
+
+**Tip:** The `[ld_course_summary]` shortcode automatically finds all quizzes and questions, so you don't need to look up individual IDs unless you want to display a specific question.
 
 ### Can I style the output?
 

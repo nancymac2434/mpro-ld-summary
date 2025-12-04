@@ -36,22 +36,74 @@ class LDCT_Course_Summary {
             'course_id' => 0,
             'show_forms' => 'yes',
             'show_quizzes' => 'essays', // 'essays' (default), 'all', or 'no'
+            'date' => 'yes', // Show completion dates
             'debug' => '0',
         ), $atts, 'ld_course_summary');
 
         $course_id = (int)$a['course_id'];
         $show_forms = strtolower($a['show_forms']) !== 'no';
         $show_quizzes = strtolower($a['show_quizzes']); // 'essays', 'all', or 'no'
+        $show_date = strtolower($a['date']) !== 'no';
         $debug = $a['debug'] === '1';
 
         // Auto-detect course_id if not provided
-        if (!$course_id && function_exists('learndash_get_course_id')) {
-            $course_id = learndash_get_course_id();
+        if (!$course_id) {
+            global $post;
+
+            // Method 1: Try LearnDash's built-in function with post ID
+            if ($post && function_exists('learndash_get_course_id')) {
+                $course_id = learndash_get_course_id($post->ID);
+            }
+
+            // Method 2: If this IS a course page
+            if (!$course_id && $post && $post->post_type === 'sfwd-courses') {
+                $course_id = $post->ID;
+            }
+
+            // Method 3: Try to get course from post meta (lessons, topics, quizzes)
+            if (!$course_id && $post) {
+                $detected_course = get_post_meta($post->ID, 'course_id', true);
+                if ($detected_course) {
+                    $course_id = (int)$detected_course;
+                }
+            }
+
+            // Method 4: For lessons, try lesson_course meta key
+            if (!$course_id && $post && $post->post_type === 'sfwd-lessons') {
+                $lesson_course = get_post_meta($post->ID, 'lesson_course', true);
+                if ($lesson_course) {
+                    $course_id = (int)$lesson_course;
+                }
+            }
         }
 
         if (!$course_id) {
+            // Debug: Show what's available
+            global $post;
+            $debug_info_array = array();
+
+            if ($post) {
+                $all_meta = get_post_meta($post->ID);
+                $course_related_meta = array();
+                foreach ($all_meta as $key => $value) {
+                    if (stripos($key, 'course') !== false || stripos($key, 'lesson') !== false) {
+                        $course_related_meta[$key] = $value;
+                    }
+                }
+                $debug_info_array['post_type'] = $post->post_type;
+                $debug_info_array['post_id'] = $post->ID;
+                $debug_info_array['course_related_meta'] = $course_related_meta;
+
+                if (function_exists('learndash_get_course_id')) {
+                    $debug_info_array['learndash_function_result'] = learndash_get_course_id($post->ID);
+                }
+            }
+
             return '<div class="ldct-error" style="padding:1rem;background:#fee;border:1px solid #fcc;border-radius:8px;color:#c33;">
                 <strong>Error:</strong> Unable to determine course. Please add course_id parameter or place this shortcode within a LearnDash course context.
+                <br><small>Current page type: ' . esc_html(get_post_type()) . ' (ID: ' . esc_html(get_the_ID()) . ')</small>
+                <br><br><strong>Debug Info:</strong>
+                <pre style="background:#fff;padding:10px;margin:10px 0;overflow:auto;max-height:300px;">' . esc_html(print_r($debug_info_array, true)) . '</pre>
             </div>';
         }
 
@@ -94,7 +146,7 @@ class LDCT_Course_Summary {
         $debug_info['final_form_data_count'] = count($form_data);
 
         // Render output
-        return $this->render_summary_html($course_id, $quiz_data, $form_data, $debug, $debug_info);
+        return $this->render_summary_html($course_id, $quiz_data, $form_data, $show_date, $debug, $debug_info);
     }
 
     /**
@@ -171,7 +223,7 @@ class LDCT_Course_Summary {
                      INNER JOIN {$t_q} q ON s.question_id = q.id
                      WHERE s.statistic_ref_id = %d
                      AND q.answer_type IN ('essay', 'free_answer')
-                     ORDER BY s.question_id ASC",
+                     ORDER BY s.question_post_id ASC",
                     $ref_id
                 );
             } else {
@@ -181,12 +233,38 @@ class LDCT_Course_Summary {
                      FROM {$t_stat} s
                      INNER JOIN {$t_q} q ON s.question_id = q.id
                      WHERE s.statistic_ref_id = %d
-                     ORDER BY s.question_id ASC",
+                     ORDER BY s.question_post_id ASC",
                     $ref_id
                 );
             }
 
             $stat_rows = $wpdb->get_results($questions_query, ARRAY_A);
+
+            // Get the correct question order from LearnDash quiz settings
+            $quiz_questions_ordered = array();
+            if (function_exists('learndash_get_quiz_questions')) {
+                $ld_questions = learndash_get_quiz_questions($quiz_id);
+                if (!empty($ld_questions)) {
+                    foreach ($ld_questions as $q) {
+                        if (isset($q['id'])) {
+                            $quiz_questions_ordered[] = (int)$q['id'];
+                        } elseif (is_numeric($q)) {
+                            $quiz_questions_ordered[] = (int)$q;
+                        }
+                    }
+                }
+            }
+
+            // Sort stat_rows by the order defined in quiz_questions_ordered
+            if (!empty($quiz_questions_ordered)) {
+                usort($stat_rows, function($a, $b) use ($quiz_questions_ordered) {
+                    $pos_a = array_search((int)$a['question_post_id'], $quiz_questions_ordered);
+                    $pos_b = array_search((int)$b['question_post_id'], $quiz_questions_ordered);
+                    if ($pos_a === false) $pos_a = 9999;
+                    if ($pos_b === false) $pos_b = 9999;
+                    return $pos_a - $pos_b;
+                });
+            }
 
             // Enrich each row with question text and answer content
             $questions = array();
@@ -214,6 +292,7 @@ class LDCT_Course_Summary {
 
                 $questions[] = array(
                     'question_post_id' => $question_post_id,
+                    'question_id' => $row['question_id'],
                     'question' => $question_text,
                     'answer_type' => $answer_type,
                     'answer_data' => $answer_data,
@@ -360,7 +439,7 @@ class LDCT_Course_Summary {
     /**
      * Render the summary HTML
      */
-    private function render_summary_html($course_id, $quiz_data, $form_data, $debug, $debug_info) {
+    private function render_summary_html($course_id, $quiz_data, $form_data, $show_date, $debug, $debug_info) {
         $course = get_post($course_id);
         $course_title = $course ? $course->post_title : "Course #{$course_id}";
 
@@ -397,16 +476,14 @@ class LDCT_Course_Summary {
         // Quiz Data Section
         if (!empty($quiz_data)) {
             $html[] = '<div class="ldct-quizzes-section">';
-            $html[] = '<h3 style="margin:0 0 1.5rem;font-size:1.35rem;color:#2b4d59;display:flex;align-items:center;">';
-            $html[] = '<span style="display:inline-block;width:8px;height:8px;background:#278983;border-radius:50%;margin-right:0.75rem;"></span>';
-            $html[] = 'Essay Answers';
-            $html[] = '</h3>';
 
             foreach ($quiz_data as $quiz) {
                 $html[] = '<div class="ldct-quiz" style="margin-bottom:2rem;background:#e8f2f4;border:1px solid #c5dde0;border-radius:8px;overflow:hidden;">';
                 $html[] = '<div class="ldct-quiz-header" style="padding:1rem 1.5rem;background:#c5dde0;border-bottom:1px solid #9dbfc5;">';
                 $html[] = '<h4 style="margin:0;font-size:1.1rem;color:#2b4d59;">' . esc_html($quiz['quiz_title']) . '</h4>';
-                $html[] = '<p style="margin:0.25rem 0 0;font-size:0.85rem;color:#5a7c88;">Completed: ' . esc_html(date('F j, Y g:i a', (int)$quiz['attempt_time'])) . '</p>';
+                if ($show_date) {
+                    $html[] = '<p style="margin:0.25rem 0 0;font-size:0.85rem;color:#5a7c88;">Completed: ' . esc_html(date('F j, Y g:i a', (int)$quiz['attempt_time'])) . '</p>';
+                }
                 $html[] = '</div>';
 
                 $html[] = '<div class="ldct-questions" style="padding:1.5rem;">';
@@ -518,11 +595,54 @@ class LDCT_Course_Summary {
             return '<em>No essay text found</em>';
         }
 
-        // For choice questions, just show the raw answer
+        // For choice questions, get the actual option text
+        global $wpdb;
+        $base = $wpdb->prefix . 'learndash_pro_quiz_';
+        $t_q = $base . 'question';
+
+        // Get question data including options
+        $q_data = $wpdb->get_row($wpdb->prepare(
+            "SELECT answer_data FROM {$t_q} WHERE id = %d",
+            (int)$question['question_id']
+        ), ARRAY_A);
+
+        if ($q_data && !empty($q_data['answer_data'])) {
+            $options = $this->parse_question_options($q_data['answer_data']);
+
+            if (!empty($options) && is_array($decoded)) {
+                $parts = array();
+
+                // Check if decoded is array of 0/1 flags
+                $is_flags = array_keys($decoded) === range(0, count($decoded) - 1) &&
+                           empty(array_diff(array_unique(array_map('strval', $decoded)), array('0', '1')));
+
+                if ($is_flags) {
+                    // Map 1s to option text
+                    foreach ($decoded as $i => $flag) {
+                        if ((int)$flag === 1 && isset($options[$i])) {
+                            $parts[] = $options[$i];
+                        }
+                    }
+                } else {
+                    // Direct indexes
+                    foreach ($decoded as $idx) {
+                        if (is_numeric($idx) && isset($options[(int)$idx])) {
+                            $parts[] = $options[(int)$idx];
+                        }
+                    }
+                }
+
+                if (!empty($parts)) {
+                    return nl2br(esc_html(implode("\n", $parts)));
+                }
+            }
+        }
+
+        // Fallback for non-choice or unparseable answers
         if (is_array($decoded)) {
             $parts = array();
-            foreach ($decoded as $key => $value) {
-                if (is_scalar($value) && trim((string)$value) !== '') {
+            foreach ($decoded as $value) {
+                if (is_scalar($value) && trim((string)$value) !== '' && !is_numeric($value)) {
                     $parts[] = esc_html($value);
                 }
             }
@@ -536,6 +656,42 @@ class LDCT_Course_Summary {
         }
 
         return '<em>—</em>';
+    }
+
+    /**
+     * Parse question options from raw answer_data
+     */
+    private function parse_question_options($raw) {
+        $options = array();
+        $decoded = $this->decode_answer($raw);
+
+        if (is_array($decoded)) {
+            foreach ($decoded as $o) {
+                if (is_object($o)) {
+                    $vars = (array)$o;
+                    $ans = '';
+                    foreach ($vars as $k => $v) {
+                        $ks = is_string($k) ? preg_replace('/^\0\*\0/', '', $k) : $k;
+                        if (strpos((string)$ks, 'answer') !== false) {
+                            $ans = $v;
+                            break;
+                        }
+                    }
+                    if ($ans) {
+                        $options[] = wp_strip_all_tags(html_entity_decode((string)$ans, ENT_QUOTES, 'UTF-8'));
+                    }
+                } elseif (is_array($o)) {
+                    $ans = $o['answer'] ?? $o['html'] ?? $o['title'] ?? '';
+                    if ($ans) {
+                        $options[] = wp_strip_all_tags(html_entity_decode((string)$ans, ENT_QUOTES, 'UTF-8'));
+                    }
+                } elseif (is_string($o)) {
+                    $options[] = wp_strip_all_tags($o);
+                }
+            }
+        }
+
+        return $options;
     }
 
     /**
