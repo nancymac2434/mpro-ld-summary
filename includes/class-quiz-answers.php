@@ -252,13 +252,23 @@ class LDCT_Quiz_Answers {
             $chosen_txt = $collect_texts($u_val ?: $u_raw);
 
             // If LD stored only indexes/flags for texty types, map to option texts
-            $only_numbers = !$chosen_txt && (
+            // Check if chosen_txt contains only numeric strings (which are likely indexes)
+            $has_only_numeric_text = $chosen_txt && count(array_filter($chosen_txt, fn($x) => preg_match('/^\d+$/', trim($x)))) === count($chosen_txt);
+
+            $only_numbers = (!$chosen_txt && (
                 (is_scalar($u_val) && preg_match('/^\d+$/', (string)$u_val)) ||
                 (is_array($u_val) && $u_val && count(array_filter($u_val, fn($x) => is_numeric($x))) === count($u_val))
-            );
+            )) || $has_only_numeric_text;
 
             if ($only_numbers && $options) {
-                $idxs = is_array($u_val) ? array_map('intval', $u_val) : array((int)$u_val);
+                // If we already collected numeric text, use those; otherwise extract from u_val
+                if ($has_only_numeric_text) {
+                    $idxs = array_map('intval', $chosen_txt);
+                    $chosen_txt = array(); // Clear the numeric strings
+                } else {
+                    $idxs = is_array($u_val) ? array_map('intval', $u_val) : array((int)$u_val);
+                }
+
                 foreach ($idxs as $i) {
                     if (isset($options[$i])) $chosen_txt[] = $options[$i]['text'];
                 }
@@ -266,8 +276,36 @@ class LDCT_Quiz_Answers {
 
             // Final fallback for ESSAY: look up the sfwd-essays CPT
             if (!$chosen_txt) {
-                $essay_text = $this->fetch_essay_text($uid, $quiz_post_id, $question_post_id, $row);
-                if ($essay_text !== '') $chosen_txt[] = $essay_text;
+                $essay_text = '';
+
+                // First try to get essay via graded_id from answer_data
+                if (is_array($u_val) && isset($u_val['graded_id'])) {
+                    $essay_post = get_post((int)$u_val['graded_id']);
+                    if ($essay_post) {
+                        $essay_text = trim(wp_strip_all_tags($essay_post->post_content));
+                    }
+                }
+
+                // If still not found, try the CPT query
+                if (!$essay_text) {
+                    $essay_text = $this->fetch_essay_text($uid, $quiz_post_id, $question_post_id, $row);
+                }
+
+                // Strip question text from beginning of essay if present
+                if ($essay_text !== '') {
+                    // Split into lines and check for duplication
+                    $lines = preg_split('/\r\n|\r|\n/', $essay_text);
+                    $lines = array_map('trim', $lines);
+                    $lines = array_filter($lines); // Remove empty lines
+
+                    // If first line appears again later, it's likely the question - remove first occurrence
+                    if (count($lines) > 1 && in_array($lines[0], array_slice($lines, 1), true)) {
+                        array_shift($lines); // Remove first line
+                        $essay_text = implode("\n", $lines);
+                    }
+
+                    if ($essay_text !== '') $chosen_txt[] = $essay_text;
+                }
             }
         }
 
@@ -380,8 +418,22 @@ class LDCT_Quiz_Answers {
      * Render the output HTML
      */
     private function render_output($label, $parts, $debug, $answer_type, $chosen_idx, $chosen_txt, $options) {
-        $html  = '<div class="ld-question-answer" style="margin:.5rem 0;padding:.75rem;border:1px solid #e5e7eb;border-radius:10px;">';
-        $html .= '<strong>' . esc_html($label) . ':</strong> ' . esc_html(implode(' | ', array_unique($parts)));
+        // Match the exact styling from ld_course_summary
+        $html = '<div class="ldct-quiz" style="margin-bottom:2rem;background:#e8f2f4;border:1px solid #c5dde0;border-radius:8px;overflow:hidden;">';
+        $html .= '<div class="ldct-quiz-header" style="padding:1rem 1.5rem;background:#c5dde0;border-bottom:1px solid #9dbfc5;">';
+        $html .= '<h4 style="margin:0;font-size:1.1rem;color:#2b4d59;">' . esc_html($label) . '</h4>';
+        $html .= '</div>';
+        $html .= '<div class="ldct-questions" style="padding:1.5rem;">';
+        $html .= '<div class="ldct-question" style="margin-bottom:0;">';
+        $html .= '<div class="ldct-answer-text" style="padding:0.75rem 1rem;background:#fff;border-left:3px solid #278983;border-radius:4px;color:#2b4d59;">';
+
+        // Use nl2br for formatting, join multiple parts with <br>
+        $answer_html = nl2br(esc_html(implode("\n", array_unique($parts))));
+        $html .= $answer_html;
+
+        $html .= '</div>';
+        $html .= '</div>';
+        $html .= '</div>';
 
         if ($debug) {
             $dbg = array(
@@ -390,8 +442,10 @@ class LDCT_Quiz_Answers {
                 'chosen_txt'  => $chosen_txt,
                 'options'     => count($options),
             );
-            $html .= '<pre style="margin-top:.5rem;background:#f9fafb;padding:.5rem;border:1px dashed #e5e7eb;white-space:pre-wrap;">'
+            $html .= '<div style="padding:0 1.5rem 1.5rem;">';
+            $html .= '<pre style="margin:0;background:#0b0d12 !important;color:#eaeef2 !important;padding:.5rem;border:1px solid #2b4d59;white-space:pre-wrap;">'
                   .  esc_html(print_r($dbg, true)) . '</pre>';
+            $html .= '</div>';
         }
 
         $html .= '</div>';
