@@ -36,6 +36,7 @@ class LDCT_Course_Summary {
             'course_id' => 0,
             'show_forms' => 'yes',
             'show_quizzes' => 'essays', // 'essays' (default), 'all', or 'no'
+            'exclude_quizzes' => '', // comma-separated quiz IDs to exclude
             'debug' => '0',
         ), $atts, 'ld_course_summary');
 
@@ -43,6 +44,12 @@ class LDCT_Course_Summary {
         $show_forms = strtolower($a['show_forms']) !== 'no';
         $show_quizzes = strtolower($a['show_quizzes']); // 'essays', 'all', or 'no'
         $debug = $a['debug'] === '1';
+
+        // Parse excluded quiz IDs
+        $excluded_quiz_ids = array();
+        if (!empty($a['exclude_quizzes'])) {
+            $excluded_quiz_ids = array_map('intval', array_filter(explode(',', $a['exclude_quizzes'])));
+        }
 
         // Auto-detect course_id if not provided
         if (!$course_id && function_exists('learndash_get_course_id')) {
@@ -71,6 +78,7 @@ class LDCT_Course_Summary {
             'course_id' => $course_id,
             'show_forms' => $show_forms,
             'show_quizzes' => $show_quizzes,
+            'excluded_quiz_ids' => $excluded_quiz_ids,
             'course_exists' => (get_post($course_id) !== null),
             'course_post_type' => get_post_type($course_id),
         );
@@ -80,7 +88,7 @@ class LDCT_Course_Summary {
         $form_data = array();
 
         if ($show_quizzes !== 'no') {
-            $quiz_data = $this->get_course_quiz_data($course_id, $user_id, $show_quizzes, $debug_info);
+            $quiz_data = $this->get_course_quiz_data($course_id, $user_id, $show_quizzes, $excluded_quiz_ids, $debug_info);
         } else {
             $debug_info['skip_reason'] = 'show_quizzes is set to no';
         }
@@ -100,11 +108,22 @@ class LDCT_Course_Summary {
     /**
      * Get all quiz data for a course
      */
-    private function get_course_quiz_data($course_id, $user_id, $quiz_mode, &$debug_info) {
+    private function get_course_quiz_data($course_id, $user_id, $quiz_mode, $excluded_quiz_ids, &$debug_info) {
         global $wpdb;
 
         // Get all quizzes in this course
-        $quizzes = $this->get_course_quizzes($course_id);
+        $all_quizzes = $this->get_course_quizzes($course_id);
+
+        // Filter out excluded quizzes
+        $quizzes = array();
+        $excluded_quizzes = array();
+        foreach ($all_quizzes as $quiz) {
+            if (!in_array($quiz['ID'], $excluded_quiz_ids)) {
+                $quizzes[] = $quiz;
+            } else {
+                $excluded_quizzes[] = $quiz;
+            }
+        }
 
         // Get the debug methods info
         global $ldct_quiz_debug;
@@ -112,6 +131,8 @@ class LDCT_Course_Summary {
             $debug_info['quiz_finding_methods'] = $ldct_quiz_debug;
         }
 
+        $debug_info['quizzes_found_total'] = count($all_quizzes);
+        $debug_info['quizzes_excluded'] = $excluded_quizzes;
         $debug_info['quizzes_found'] = $quizzes;
         $debug_info['quiz_count'] = count($quizzes);
 
@@ -166,22 +187,22 @@ class LDCT_Course_Summary {
             // If quiz_mode is 'essays', only get essay-type questions
             if ($quiz_mode === 'essays') {
                 $questions_query = $wpdb->prepare(
-                    "SELECT s.question_post_id, s.question_id, s.answer_data, q.answer_type
+                    "SELECT s.question_post_id, s.question_id, s.answer_data, q.answer_type, q.answer_data as question_answer_data, q.sort
                      FROM {$t_stat} s
                      INNER JOIN {$t_q} q ON s.question_id = q.id
                      WHERE s.statistic_ref_id = %d
                      AND q.answer_type IN ('essay', 'free_answer')
-                     ORDER BY s.question_id ASC",
+                     ORDER BY q.sort ASC",
                     $ref_id
                 );
             } else {
                 // 'all' mode - get all questions
                 $questions_query = $wpdb->prepare(
-                    "SELECT s.question_post_id, s.question_id, s.answer_data, q.answer_type
+                    "SELECT s.question_post_id, s.question_id, s.answer_data, q.answer_type, q.answer_data as question_answer_data, q.sort
                      FROM {$t_stat} s
                      INNER JOIN {$t_q} q ON s.question_id = q.id
                      WHERE s.statistic_ref_id = %d
-                     ORDER BY s.question_id ASC",
+                     ORDER BY q.sort ASC",
                     $ref_id
                 );
             }
@@ -194,6 +215,7 @@ class LDCT_Course_Summary {
                 $question_post_id = $row['question_post_id'];
                 $answer_data = $row['answer_data'];
                 $answer_type = $row['answer_type'] ?? 'essay';
+                $question_answer_data = $row['question_answer_data'] ?? '';
 
                 // Get question text from the question post
                 $question_post = get_post($question_post_id);
@@ -217,6 +239,7 @@ class LDCT_Course_Summary {
                     'question' => $question_text,
                     'answer_type' => $answer_type,
                     'answer_data' => $answer_data,
+                    'question_answer_data' => $question_answer_data,
                     'essay_text' => $essay_text,
                 );
             }
@@ -342,6 +365,71 @@ class LDCT_Course_Summary {
             }
         }
 
+        // Method 5: Scan lesson/topic content for [ld_quiz] shortcodes
+        $shortcode_quizzes = array();
+
+        // Get all lessons and topics in this course
+        $course_lessons = learndash_get_course_lessons_list($course_id);
+        $content_to_scan = array();
+
+        if (!empty($course_lessons)) {
+            foreach ($course_lessons as $lesson) {
+                $lesson_id = is_array($lesson) && isset($lesson['post']) ? $lesson['post']->ID : (is_object($lesson) ? $lesson->ID : $lesson);
+                $lesson_post = get_post($lesson_id);
+                if ($lesson_post) {
+                    $content_to_scan[] = array('id' => $lesson_id, 'content' => $lesson_post->post_content, 'title' => $lesson_post->post_title);
+
+                    // Get topics for this lesson
+                    $topics = learndash_get_topic_list($lesson_id);
+                    if (!empty($topics)) {
+                        foreach ($topics as $topic) {
+                            $topic_id = is_array($topic) && isset($topic['post']) ? $topic['post']->ID : (is_object($topic) ? $topic->ID : $topic);
+                            $topic_post = get_post($topic_id);
+                            if ($topic_post) {
+                                $content_to_scan[] = array('id' => $topic_id, 'content' => $topic_post->post_content, 'title' => $topic_post->post_title);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Scan content for [ld_quiz quiz_id="..."] shortcodes
+        $found_shortcodes = array();
+        foreach ($content_to_scan as $item) {
+            if (preg_match_all('/\[ld_quiz\s+quiz_id=["\']?(\d+)["\']?[^\]]*\]/i', $item['content'], $matches)) {
+                foreach ($matches[1] as $quiz_id) {
+                    $qid = (int)$quiz_id;
+                    if (!in_array($qid, array_column($shortcode_quizzes, 'ID'))) {
+                        $quiz_post = get_post($qid);
+                        if ($quiz_post && $quiz_post->post_type === 'sfwd-quiz') {
+                            $shortcode_quizzes[] = array('ID' => $qid, 'post_title' => $quiz_post->post_title);
+                            $found_shortcodes[] = array(
+                                'quiz_id' => $qid,
+                                'quiz_title' => $quiz_post->post_title,
+                                'found_in' => $item['title'],
+                                'found_in_id' => $item['id'],
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        $debug_methods['method_5_shortcode_scan'] = array(
+            'content_items_scanned' => count($content_to_scan),
+            'quizzes_found' => count($shortcode_quizzes),
+            'details' => $found_shortcodes,
+        );
+
+        // Merge shortcode quizzes with existing quizzes (avoiding duplicates)
+        $existing_ids = array_column($quizzes, 'ID');
+        foreach ($shortcode_quizzes as $sq) {
+            if (!in_array($sq['ID'], $existing_ids)) {
+                $quizzes[] = $sq;
+            }
+        }
+
         // Store debug info globally for retrieval
         global $ldct_quiz_debug;
         $ldct_quiz_debug = $debug_methods;
@@ -397,10 +485,6 @@ class LDCT_Course_Summary {
         // Quiz Data Section
         if (!empty($quiz_data)) {
             $html[] = '<div class="ldct-quizzes-section">';
-            $html[] = '<h3 style="margin:0 0 1.5rem;font-size:1.35rem;color:#2b4d59;display:flex;align-items:center;">';
-            $html[] = '<span style="display:inline-block;width:8px;height:8px;background:#278983;border-radius:50%;margin-right:0.75rem;"></span>';
-            $html[] = 'Essay Answers';
-            $html[] = '</h3>';
 
             foreach ($quiz_data as $quiz) {
                 $html[] = '<div class="ldct-quiz" style="margin-bottom:2rem;background:#e8f2f4;border:1px solid #c5dde0;border-radius:8px;overflow:hidden;">';
@@ -518,11 +602,38 @@ class LDCT_Course_Summary {
             return '<em>No essay text found</em>';
         }
 
-        // For choice questions, just show the raw answer
+        // For choice questions, map indexes to answer text
+        $is_choice = in_array($answer_type, array('single', 'multiple', 'single_choice', 'multiple_choice', 'assessment_answer'), true);
+
+        if ($is_choice && isset($question['question_answer_data'])) {
+            $options = $this->parse_choice_options($question['question_answer_data']);
+
+            if (!empty($options) && is_array($decoded)) {
+                // Check if decoded is a flags array (0s and 1s)
+                $looks_like_flags = count($decoded) > 0 &&
+                                   array_keys($decoded) === range(0, count($decoded) - 1) &&
+                                   empty(array_diff(array_unique(array_map('strval', $decoded)), array('0', '1')));
+
+                if ($looks_like_flags) {
+                    // Map 1s to answer text
+                    $selected = array();
+                    foreach ($decoded as $index => $flag) {
+                        if ((int)$flag === 1 && isset($options[$index])) {
+                            $selected[] = $options[$index];
+                        }
+                    }
+                    if (!empty($selected)) {
+                        return esc_html(implode(', ', $selected));
+                    }
+                }
+            }
+        }
+
+        // Fallback for other types
         if (is_array($decoded)) {
             $parts = array();
             foreach ($decoded as $key => $value) {
-                if (is_scalar($value) && trim((string)$value) !== '') {
+                if (is_scalar($value) && trim((string)$value) !== '' && !in_array($value, array('0', '1'), true)) {
                     $parts[] = esc_html($value);
                 }
             }
@@ -536,6 +647,49 @@ class LDCT_Course_Summary {
         }
 
         return '<em>—</em>';
+    }
+
+    /**
+     * Parse choice question options
+     */
+    private function parse_choice_options($raw) {
+        $options = array();
+        $decoded = $this->decode_answer($raw);
+
+        if (!is_array($decoded)) {
+            return $options;
+        }
+
+        foreach ($decoded as $item) {
+            if (is_object($item)) {
+                // Try object methods first
+                if (method_exists($item, 'getAnswer')) {
+                    $options[] = wp_strip_all_tags(html_entity_decode((string)$item->getAnswer(), ENT_QUOTES, 'UTF-8'));
+                } else {
+                    // Try object properties
+                    $vars = (array)$item;
+                    foreach ($vars as $k => $v) {
+                        $ks = is_string($k) ? preg_replace('/^\0\*\0/', '', $k) : $k;
+                        if (strpos((string)$ks, 'answer') !== false) {
+                            $options[] = wp_strip_all_tags(html_entity_decode((string)$v, ENT_QUOTES, 'UTF-8'));
+                            break;
+                        }
+                    }
+                }
+            } elseif (is_array($item)) {
+                if (isset($item['answer'])) {
+                    $options[] = wp_strip_all_tags(html_entity_decode((string)$item['answer'], ENT_QUOTES, 'UTF-8'));
+                } elseif (isset($item['html'])) {
+                    $options[] = wp_strip_all_tags(html_entity_decode((string)$item['html'], ENT_QUOTES, 'UTF-8'));
+                } elseif (isset($item['title'])) {
+                    $options[] = wp_strip_all_tags(html_entity_decode((string)$item['title'], ENT_QUOTES, 'UTF-8'));
+                }
+            } elseif (is_string($item)) {
+                $options[] = wp_strip_all_tags(html_entity_decode($item, ENT_QUOTES, 'UTF-8'));
+            }
+        }
+
+        return $options;
     }
 
     /**

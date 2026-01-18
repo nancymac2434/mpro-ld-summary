@@ -2,7 +2,7 @@
 /**
  * Settings Page Handler
  *
- * Provides admin settings page for the LearnDash Course Toolkit plugin.
+ * Provides admin settings page for the MPro LearnDash Toolkit plugin.
  *
  * @package LearnDash_Course_Toolkit
  */
@@ -34,8 +34,8 @@ class LDCT_Settings {
      */
     public function add_settings_page() {
         add_options_page(
-            'LearnDash Course Toolkit',
-            'LD Course Toolkit',
+            'MPro LearnDash Toolkit',
+            'MPro LD Toolkit',
             'manage_options',
             'learndash-course-toolkit',
             array($this, 'render_settings_page')
@@ -96,7 +96,7 @@ class LDCT_Settings {
      * Render section description
      */
     public function render_section_description() {
-        echo '<p>Configure which features of the LearnDash Course Toolkit are enabled.</p>';
+        echo '<p>Configure which features of the MPro LearnDash Toolkit are enabled.</p>';
     }
 
     /**

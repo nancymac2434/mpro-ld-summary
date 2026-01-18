@@ -1,4 +1,4 @@
-# LearnDash Course Toolkit
+# MPro LearnDash Toolkit
 
 A comprehensive WordPress plugin for LearnDash that provides powerful shortcodes to display quiz answers, essay responses, and capture Otter form data across all your courses.
 
@@ -13,9 +13,9 @@ A comprehensive WordPress plugin for LearnDash that provides powerful shortcodes
 
 ## Installation
 
-1. Upload the `learndash-course-toolkit` folder to the `/wp-content/plugins/` directory
+1. Upload the `mpro-learndash-toolkit` folder to the `/wp-content/plugins/` directory
 2. Activate the plugin through the 'Plugins' menu in WordPress
-3. Go to Settings > LD Course Toolkit to configure
+3. Go to Settings > MPro LD Toolkit to configure
 
 ## Shortcodes
 
@@ -40,6 +40,7 @@ or with explicit course ID:
   - `"essays"` (default) - Show only essay/free-answer questions
   - `"all"` - Show all quiz questions (including multiple choice, true/false, etc.)
   - `"no"` - Don't show any quiz questions
+- `exclude_quizzes` (optional) - Comma-separated list of quiz IDs to exclude from display (e.g., "123,456,789")
 - `debug` (optional) - Enable debug mode with `debug="1"` to see technical details (default: "0")
 
 **Examples:**
@@ -52,6 +53,9 @@ or with explicit course ID:
 
 # Show only forms, no quiz questions
 [ld_course_summary show_quizzes="no"]
+
+# Exclude specific quizzes from display
+[ld_course_summary show_quizzes="all" exclude_quizzes="123,456"]
 
 # Explicit course ID - useful for custom pages or showing different course
 [ld_course_summary course_id="456" show_forms="yes" show_quizzes="essays"]
@@ -158,7 +162,7 @@ https://yoursite.com/wp-admin/?ld_stats_all=on
 
 ## Settings
 
-Access plugin settings at **Settings > LD Course Toolkit** to:
+Access plugin settings at **Settings > MPro LD Toolkit** to:
 - Enable/disable specific features
 - View all available shortcodes
 - Access documentation
@@ -243,7 +247,7 @@ The shortcodes will show a friendly message indicating no attempts have been mad
 
 ## Support
 
-For bug reports and feature requests, please open an issue on the [GitHub repository](https://github.com/yourusername/learndash-course-toolkit).
+For support, please contact MentorPro at https://mentorpro.com
 
 ## License
 
