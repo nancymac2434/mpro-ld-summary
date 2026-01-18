@@ -192,8 +192,21 @@ class LDCT_Settings {
 
             <div class="ldct-shortcode-docs">
                 <h3>Course Summary</h3>
-                <code>[ld_course_summary]</code> or <code>[ld_course_summary course_id="123" date="no"]</code>
-                <p>Displays essay answers and Otter form responses for a course in one unified summary. The <code>course_id</code> parameter is optional - if omitted, it auto-detects the course from the page context. By default shows only essay questions; use <code>show_quizzes="all"</code> to include all question types. Use <code>date="no"</code> to hide completion dates.</p>
+                <code>[ld_course_summary]</code>
+                <p>Displays quiz answers and Otter form responses for a course in one unified summary.</p>
+
+                <p><strong>Parameters:</strong></p>
+                <ul style="margin-left: 20px; color: #666;">
+                    <li><code>course_id</code> - (optional) Course ID. Auto-detects if omitted.</li>
+                    <li><code>show_quizzes</code> - (optional) <code>"essays"</code> (default), <code>"all"</code>, or <code>"no"</code></li>
+                    <li><code>show_forms</code> - (optional) <code>"yes"</code> (default) or <code>"no"</code></li>
+                    <li><code>exclude_quizzes</code> - (optional) Comma-separated quiz IDs to exclude (e.g., <code>"123,456"</code>)</li>
+                </ul>
+
+                <p><strong>Examples:</strong></p>
+                <code>[ld_course_summary show_quizzes="all"]</code><br>
+                <code>[ld_course_summary show_quizzes="all" exclude_quizzes="123,456"]</code><br>
+                <code>[ld_course_summary course_id="789" show_forms="no"]</code>
 
                 <h3>Individual Quiz Answer</h3>
                 <code>[ld_qanswer quiz_id="123" question_post_id="456" show="correct" label="Your answer"]</code>
